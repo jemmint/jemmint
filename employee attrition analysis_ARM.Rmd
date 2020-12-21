@@ -1,0 +1,472 @@
+---
+title: "Employee Attrition Analysis"
+author: "Eunmi Jeong"
+date: "Sep 20, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA,  warning = FALSE, message = FALSE)
+```
+### 1. Data preprocessing, cleaing, transformation
+* Check the structure of dataset
+```{r echo=FALSE}
+setwd("~/Desktop/SU IM DOC/'20 FALL/IST707/assignment/HW1")
+library(dplyr)
+library(arules)
+library(ggplot2)
+library(caret)
+library(stringr)
+library(corrplot)
+library(e1071)
+library(scales)
+library(arulesViz)
+library(rmarkdown)
+library(knitr)
+library(tinytex)
+data <- read.csv("xid-54535362_1.csv")
+```
+
+```{r results='hide'}
+str(data) #1176 obs. of  35 variables
+```
+* Missing value detection and manipulation
+```{r results='hide'}
+sum(is.na(data)) #9
+data2 <- na.omit(data)
+which(data2$Gender=="") #Missing value in 'Gender' column
+data2 <- data2[-1053,]
+which(data2$OverTime=="") #Missing value in 'OverTime' column
+data2 <- data2[-1004,]
+rownames(data2) <- NULL #1165 obs. of  35 variables
+```
+* Identify and remove low or no variance
+```{r results='hide'}
+caret::nearZeroVar(data2, saveMetrics = T) #EmployeeCount, Over18, StandardHours
+nzv <- nearZeroVar(data2)
+data2 <- data2[,-nzv]
+```
+* Check duplicate data record
+```{r}
+nrow(data2[!duplicated(data2), ]) #no duplicates
+```
+* Identify and remove outliers or noises
+   + DistanceFromHome 
+   + NumCompaniesWorked
+   + TotalWorkingYears
+   + YearsAtCompany
+   + YearsInCurrentRole
+   + YearsWithCurrentManager
+```{r}
+#DistanceFromHome 
+boxplot(data2$DistanceFromHome)
+data2$DistanceFromHome[data2$DistanceFromHome %in% boxplot.stats(data2$DistanceFromHome)$out] <- median(data2$DistanceFromHome, na.rm = T)
+#Number of companies worked
+boxplot(data2$NumCompaniesWorked) 
+data2$NumCompaniesWorked[data2$NumCompaniesWorked %in% boxplot.stats(data2$NumCompaniesWorked)$out] <- median(data2$NumCompaniesWorked, na.rm = T)
+#Total working years
+boxplot(data2$TotalWorkingYears) 
+data2$TotalWorkingYears[data2$TotalWorkingYears %in% boxplot.stats(data2$TotalWorkingYears)$out] <- median(data2$TotalWorkingYears, na.rm = T)
+#Years at current company
+boxplot(data2$YearsAtCompany) 
+data2$YearsAtCompany[data2$YearsAtCompany %in% boxplot.stats(data2$YearsAtCompany)$out] <- median(data2$YearsAtCompany, na.rm = T)
+#YearsInCurrentRole
+boxplot(data2$YearsInCurrentRole) 
+data2$YearsInCurrentRole[data2$YearsInCurrentRole %in% boxplot.stats(data2$YearsInCurrentRole)$out] <- median(data2$YearsInCurrentRole, na.rm = T)
+#YearsWithCurrentManager
+boxplot(data2$YearsWithCurrManager) 
+data2$YearsWithCurrManager[data2$YearsWithCurrManager %in% boxplot.stats(data2$YearsWithCurrManager)$out] <- median(data2$YearsWithCurrManager, na.rm = T)
+```
+* Discretization
+   + Age
+   + Daily rate
+   + Distance from home
+   + Years at current company
+   + Years with current manager
+   
+```{r}
+#Age
+data2$Age_grp <- arules::discretize(data2$Age, method = "frequency", breaks = 3, labels = c("young", "middle", "old"))
+data2 %>%
+  group_by(Age_grp) %>%
+  summarise(avg_Age = mean(Age), count = n(), min = min(Age), max = max(Age))
+#Daily rate
+data2$DailyRate_grp <- arules::discretize(data2$DailyRate, method = "frequency", breaks = 3, labels = c("low", "medium", "high"))
+data2 %>%
+  group_by(DailyRate_grp) %>%
+  summarise(avg_Rate = mean(DailyRate), count = n(), min = min(DailyRate), max = max(DailyRate))
+#DistanceFromHome   
+data2$Dist_grp <- arules::discretize(data2$DistanceFromHome, method = "frequency", breaks = 3, labels = c("close", "medium", "far"))
+data2 %>%
+  group_by(Dist_grp) %>%
+  summarise(avg_dist = mean(DistanceFromHome), count = n(), min = min(DistanceFromHome), max = max(DistanceFromHome))
+#Years at current company
+data2$WorkYrs_grp <- arules::discretize(data2$YearsAtCompany, method = "frequency", breaks = 3, labels = c("short", "medium", "long"))
+data2 %>%
+  group_by(WorkYrs_grp) %>%
+  summarise(avg_dist = mean(YearsAtCompany), count = n(), min = min(YearsAtCompany), max = max(YearsAtCompany))
+#YearsInCurrentRole
+data2$RoleYrs_grp <- arules::discretize(data2$YearsInCurrentRole, method = "frequency", breaks = 3, labels = c("short", "medium", "long"))
+data2 %>%
+  group_by(RoleYrs_grp) %>%
+  summarise(avg_dist = mean(YearsInCurrentRole), count = n(), min = min(YearsInCurrentRole), max = max(YearsInCurrentRole))
+#YearsWithCurrentManager
+data2$CurrManagerYrs_grp <- arules::discretize(data2$YearsWithCurrManager, method = "frequency", breaks = 3, labels = c("short", "medium", "long"))
+data2 %>%
+  group_by(CurrManagerYrs_grp) %>%
+  summarise(avg_dist = mean(YearsWithCurrManager), count = n(), min = min(YearsWithCurrManager), max = max(YearsWithCurrManager))
+```
+
+* Adding Variables
+   + Daily working hours
+   
+```{r}
+data2 <- data2 %>% mutate(d.work.hrs=DailyRate/HourlyRate ) #Daily working hours
+boxplot(data2$d.work.hrs) #Identify&remove outlier
+data2$d.work.hrs[data2$d.work.hrs %in% boxplot.stats(data2$d.work.hrs)$out] <- median(data2$d.work.hrs, na.rm = T)
+```
+
+* Shorten variable name and value labels
+   + Department
+   
+```{r results='hide'}
+data2$Dep.s <- data2[,5]
+data2$Dep.s <- str_replace_all(data2$Dep.s,"Research & Development", "R&D")
+data2$Dep.s <- str_replace_all(data2$Dep.s,"Human Resources", "HR")
+```
+
+* Change Variable Type (Numerical-Categorical)
+   + Employeee number (integer-charactor)
+   + Education (integer-factor)
+   + EnvironmentSatisfaction (integer-factor) 
+   + JobLevel (integer-factor)
+   + JobSatisfaction (integer-factor)
+   + StockOptionLevel (integer-factor)
+   + RelationshipSatisfaction (integer-factor)
+   + WorkLifeBalance (integer-factor)
+   + PerformanceRating (integer-factor)
+   
+```{r}
+data2$EmployeeNumber <- as.character(data2$EmployeeNumber)
+data2$Education <- as.factor(data2$Education)
+data2$EnvironmentSatisfaction <- as.factor(data2$EnvironmentSatisfaction)
+data2$JobLevel <- as.factor(data2$JobLevel)
+data2$JobSatisfaction <- as.factor(data2$JobSatisfaction)
+data2$StockOptionLevel <- as.factor(data2$StockOptionLevel)
+data2$RelationshipSatisfaction <- as.factor(data2$RelationshipSatisfaction)
+data2$WorkLifeBalance <- as.factor(data2$WorkLifeBalance)
+data2$PerformanceRating <- as.factor(data2$PerformanceRating)
+```
+
+* Missing Value Imputation and Scaling
+
+```{r}
+preprocess <- caret::preProcess(data2, method = c("knnImpute", "center", "scale"))
+data3 <- predict(preprocess, data2)
+sum(!complete.cases(data3)) 
+```
+
+* Detect Attribute's Correlation (positive)
+   + Age-MonthlyIncome
+   + Age-TotalWorkingYears
+   + MonthlyIncome-TotalWorkingYears
+   + PercentSalaryHike-PerformanceRating
+   + YearsAtCompany-YearsInCurrentRole
+   + YearsAtCompany-YearsWithCurrentManager
+   + DailyWorkingHours-DailyRate
+* Detect Attribute's Correlation (negative)
+   + DailyWorkingHours-HourlyRate
+
+```{r}
+cor_matrix <- cor(data3[complete.cases(data3), sapply(data3, is.numeric)], method = "pearson")
+corrplot(cor_matrix, type="upper", tl.cex = 0.7 ) 
+```
+
+### 2. Exploratory Data Analysis (EDA)
+* Pie Chart
+   + Age group: old(40-60) group is the biggest
+   + Distance from home group: far(10-29) group is the biggest
+   + Gender group: male group is bigger than female group
+   + Department group: R&D group is the biggest
+   
+```{r}
+# Age group
+data3 %>%  group_by(Age_grp) %>%
+  summarise(pct = percent(n()/nrow(data3))) %>%
+  ggplot(aes(x = factor(1), y = pct, fill = Age_grp)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y") +
+  theme(axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank())
+# Distance from home group
+data3 %>%  group_by(Dist_grp) %>%
+  summarise(pct = percent(n()/nrow(data3))) %>%
+  ggplot(aes(x = factor(1), y = pct, fill = Dist_grp)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y") +
+  theme(axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank())
+# Gender group
+data3 %>%  group_by(Gender) %>%
+  summarise(pct = percent(n()/nrow(data3))) %>%
+  ggplot(aes(x = factor(1), y = pct, fill = Gender)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y") +
+  theme(axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank())
+ # Department group
+data3 %>%  group_by(Dep.s) %>%
+  summarise(pct = percent(n()/nrow(data3))) %>%
+  ggplot(aes(x = factor(1), y = pct, fill = Dep.s)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y") +
+  theme(axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank())
+```
+
+* Boxplot
+   + Attrition-YearsAtCompany: people who leave work shorter at the company than those who stay
+   + Attrition-YearsInCurrentRole: people who leave work shorter in their roles than those who stay
+   + Attrition-YearsWithCurrManager: people who leave work shorter under current manager than those who stay
+   + Attrition-DailyRate: people who leave work are paid less than those who stay
+   + Dep.s-Monthlyincome: Sales department shows the highest monthly income
+   + Education-Monthlyincome: people in higher education level are paid more
+   + Age-grp-Monthlyincome: old people(40-60) are paid more
+   
+```{r}
+#attrition-YearsAtCompany
+ggplot(data3, aes(x = Attrition, y = YearsAtCompany)) +
+  geom_boxplot() +
+  theme(panel.grid.major.x = element_blank())
+#attrition-YearsInCurrentRole
+ggplot(data3, aes(x = Attrition, y = YearsInCurrentRole)) +
+  geom_boxplot() +
+  theme(panel.grid.major.x = element_blank())
+#attrition-YearsWithCurrManager
+ggplot(data3, aes(x = Attrition, y = YearsWithCurrManager)) +
+  geom_boxplot() +
+  theme(panel.grid.major.x = element_blank())
+#attrition-daily rate
+ggplot(data3, aes(x = Attrition, y = DailyRate)) +
+  geom_boxplot() +
+  theme(panel.grid.major.x = element_blank())
+#Dep.s-monthlyincome
+ggplot(data3, aes(x = Dep.s, y = MonthlyIncome)) +
+  geom_boxplot() +
+  theme(panel.grid.major.x = element_blank())
+#Education-monthlyincome
+ggplot(data3, aes(x = Education, y = MonthlyIncome)) +
+  geom_boxplot() +
+  theme(panel.grid.major.x = element_blank())
+#Age-grp-monthlyincome
+ggplot(data3, aes(x = Age_grp, y = MonthlyIncome)) +
+  geom_boxplot() +
+  theme(panel.grid.major.x = element_blank())
+```
+
+* Barplot
+   + Department: Sales are paid most
+   + Education field: The number of people who studied Life Science & Medical is the biggest
+   + Education Field-average monthly income: average monthly income of HR & Marketing is the highest, technical degree is the lowest
+   
+```{r}
+#Number of people in each Department
+dep.s.grp <- data3 %>%
+  group_by(Dep.s) %>%
+  summarise(ave_Dep = mean(MonthlyIncome), na.rm=T) %>%
+  arrange(desc(ave_Dep))
+
+dep.s.grp$Dep.s <- factor(dep.s.grp$Dep.s,
+                                    levels = dep.s.grp$Dep.s)
+
+ggplot(dep.s.grp, aes(x = Dep.s, y = ave_Dep)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major.x = element_blank())
+
+#Number of people in each Education Field
+education.f.grp <- data3 %>%
+  group_by(EducationField) %>%
+  summarise(num_Edu = n(), na.rm=T) %>%
+  arrange(desc(num_Edu))
+
+education.f.grp$EducationField <- factor(education.f.grp$EducationField,
+                          levels = education.f.grp$EducationField)
+ggplot(education.f.grp, aes(x = EducationField, y = num_Edu)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major.x = element_blank())
+
+#Education Field-average monthly income
+education.f.g <- data3 %>%
+  group_by(EducationField) %>%
+  summarise(ave_m.i = mean(MonthlyIncome, na.rm=T)) %>%
+  arrange(desc(ave_m.i))
+education.f.g$EducationField <- factor(education.f.g$EducationField,
+                                         levels = education.f.g$EducationField)
+ggplot(education.f.g, aes(x = EducationField, y = ave_m.i)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major.x = element_blank())
+```
+
+* Faceting
+   + DailyRate-DailyWorkingHours-Gender-Education level: population is concentrated on education level 3 regardless of gender. 
+   
+```{r}
+ggplot(data3, aes(DailyRate, d.work.hrs)) +
+  geom_point() +
+  facet_grid(Gender ~ Education)
+```
+
+* Heatmap
+   + Worklifebalance-Jobsatisfaction-DailyRate: people with high level of job satisfaction and worklifebalance show high daily rate.
+   
+```{r}
+ggplot(data3, aes(x = WorkLifeBalance, y = JobSatisfaction)) +
+  geom_tile(aes(fill = DailyRate), color = "white") +
+  scale_fill_gradient(low = "red", high = "green") +
+  theme(axis.ticks = element_blank()) +
+  labs(x = "WorkLifeBalance", y = "JobSatisfaction")
+```
+
+* Histogram
+   + YearsAtCompany
+   + YearsInCurrentRole
+   + YearsSinceLastPromotion
+   + YearsWithCurrManager
+   + NumCompaniesWorked
+   
+```{r}
+#YearsAtCompany
+hist(data3$YearsAtCompany)
+#YearsInCurrentRole
+hist(data3$YearsInCurrentRole)
+#YearsSinceLastPromotion
+hist(data3$YearsSinceLastPromotion)
+#YearsWithCurrManager
+hist(data3$YearsWithCurrManager)
+#NumCompaniesWorked 
+hist(data3$NumCompaniesWorked)
+```
+
+* Scatterplot
+   + DailyWorkingHours-HourlyRate-DailyRate-JobSatisfaction: people who work longer in a day shows higher daily rate and job satisfaction even though hourly rate is lower than ohters. 
+   
+```{r}
+ggplot(data3, aes(x = d.work.hrs, y = DailyRate)) +
+  geom_point(aes(color = JobSatisfaction, size = HourlyRate)) +
+  geom_smooth(method = "lm")
+```
+
+
+
+### 3. Assosication Rules Mining
+   + Default setting : rules which cannot display association between LHS & RHS are identified (ex. { } - {Attrition=No})
+   
+```{r results='hide'}
+data[,23] #Removed 'PerformanceRating'column having 2 level whih is not meaningful 
+data3 <- data3[,-23]
+rules <- apriori(data3[, sapply(data3, is.factor)], 
+                        parameter = list(support = 0.1, confidence = 0.8, minlen = 1, maxlen = 10))
+```
+
+```{r}
+inspect(head(rules, 3)) 
+```
+   + Fine tuning hyperparameters
+   1. Lower confidence and increase the number of minimal number of items per rule : more rules wiht better pairs, but still not easy to identify patterns
+   
+```{r}
+rules2 <- apriori(data3[, sapply(data3, is.factor)], 
+                 parameter = list(support = 0.1, confidence = 0.5, minlen = 2, maxlen = 10))
+inspect(head(rules2, 3)) 
+```
+
+    2. Increase the number of minimal number of items per rule : less rules than ruleset2
+    
+```{r}
+rules3 <- apriori(data3[, sapply(data3, is.factor)], 
+                  parameter = list(support = 0.1, confidence = 0.5, minlen = 3))
+```
+
+
+```{r results='hide'}
+inspect(head(rules3, 3)) 
+```
+    
+    3. Higher 'support' : the number of ruleset decreases considerably
+    
+```{r}
+rules4 <- apriori(data3[, sapply(data3, is.factor)], 
+                  parameter = list(support = 0.3, confidence = 0.5, minlen = 3))
+```
+
+
+```{r results='hide'}
+inspect(head(rules4, 3)) 
+```
+    4. Lower 'support', higher 'confidence' : the number of ruleset increases considerably
+```{r}
+rules5 <- apriori(data3[, sapply(data3, is.factor)], 
+                  parameter = list(support = 0.05, confidence = 0.8, minlen = 3))
+```
+
+```{r results='hide'}
+inspect(head(rules5, 3))
+```
+    5. Increase 'support' and lower 'confidence' with 3 minimal items for each ruleset
+```{r}
+rules6 <- apriori(data3[, sapply(data3, is.factor)], 
+                  parameter = list(support = 0.1, confidence = 0.6, minlen = 3)) 
+inspect(head(rules6, 3))
+#Remove redundant rules
+subset_rules <- which(colSums(is.subset(rules6, rules6)) > 1)
+rules6 <- sort(rules6[-subset_rules], by = "lift", descreasing = T)
+inspect(head(rules6, 5))
+```
+   + Print out top 5 rules for people who leave 
+      * Young people(18-31) who travel frequently with no stock option and short working years in thier current roles are more likely to leave
+      * Young people(18-31) who travel frequently with no stock option and short working years in thier current roles under current manager are more likely to leave
+      * Young people(18-31) who travel frequently in low job level with short working years in thier currnet roles under current manager without stock option are more likely to leave
+      * Young people(18-31) who travel frequently with short working years at the company and in thier current roles without stock option are more likely to leave
+      * Young people(18-31) who travel frequently in low job level with no stock option and short working years in thier currnet roles are more likely to leave
+      
+```{r}
+fac_var <- sapply(data3, is.factor)
+rules_s <- as(data3[, fac_var], "transactions")
+
+rules_Y <- apriori(rules_s, parameter = list(support = 0.01, confidence = 0.5),
+                             appearance = list(default = "lhs", rhs = c("Attrition=Yes")),
+                             control = list(verbose = F))
+inspect(head(sort(rules_Y, by = "lift", descreasing = T), 5))
+```
+  
+   + Print out the top 5 rules 
+    2. Top 5 rules of people who stay
+      * People with high level of education and job satisfaction are more likely to stay
+      * People with high education level who studied in 'Medical' field are more likely to stay
+      * People whose job role is 'human resources' living close to the office are more likely to stay 
+      * People who work at 'human resources department' and live close to the office are more likely to stay       
+      * People who work at 'human resources department' working longer years with their current managers are more likely to stay
+      
+```{r}
+rules_N <- apriori(data = rules_s, parameter = list(supp = 0.01, conf = 0.5),
+                   appearance = list(default = "lhs", rhs = c("Attrition=No")),
+                   control = list(verbose = F))
+inspect(head(sort(rules_N, by = "lift", descreasing = T), 5))
+```
+
+### 4. Association Rules Mining Interpretation
+   + Rules of leaving: People who leave are more likely to be young and factors like frequent travel, no stock option, low job level, short working years at the company, short working years in their current roles, short working years under current manager seem to affect them to leave. These rules give us an idea of strategies for preventing employee attrition. Specifically, we can find that providing benefits(including stock option) or training for enhancing loyalty and job satisfaction of the young people could be helpful to forestall employee attrition. Also, studying the relationship between the managers and lower level employees and improving it could helpful.
+   + Rules of staying: We can find demopraphic feastures of people who are not likely to leave. They tend to have high level of education background. Among various education fields, especially people who studied medical field are more likely to stay. They tend to work at human resources department as human resources roles and they have worked with current managers for a long time. Also, they tend to live close to the workplace. These are significant indicators which gives an idea of factors which matter a lot to help people stay longer. For example, we can investigate more specific characteristics of human resources department and try to apply them to other departments. 
+   
+```{r}
+```
+
+### Shinyapp: https://jemmint.shinyapps.io/707_1/  
+   
